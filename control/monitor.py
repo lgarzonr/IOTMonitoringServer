@@ -1,12 +1,13 @@
 from argparse import ArgumentError
 import ssl
 from django.db.models import Avg
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, timezone
 from receiver.models import Data, Measurement
 import paho.mqtt.client as mqtt
 import schedule
 import time
 from django.conf import settings
+from statistics import stdev
 
 client = mqtt.Client(settings.MQTT_USER_PUB)
 
@@ -59,6 +60,27 @@ def analyze_data():
     print(alerts, "alertas enviadas")
 
 
+def analyze_variation():
+    data = Data.objects.filter(base_time__gte=datetime.now(tz=timezone.utc) - timedelta(hours=1))
+    alerts = 0
+    for d in data:
+        variation = stdev(d.values)
+        max_variation_value = Measurement.objects.filter(name='variacion_' + d.measurement.name).first().max_value
+        country = d.station.location.country.name
+        state = d.station.location.state.name
+        city = d.station.location.city.name
+        user = d.station.user.username
+
+        if variation > max_variation_value:
+            message = "ALERTA DE VARIACION {} {} {}".format(d.measurement.name, variation, max_variation_value)
+            topic = '{}/{}/{}/{}/in'.format(country, state, city, user)
+            print(datetime.now(), "Sending variation alert to {} {}".format(topic, d.measurement.name))
+            client.publish(topic, message)
+            alerts += 1
+
+    print(alerts, "alertas enviadas")
+
+
 def on_connect(client, userdata, flags, rc):
     '''
     Función que se ejecuta cuando se conecta al bróker.
@@ -106,6 +128,7 @@ def start_cron():
     '''
     print("Iniciando cron...")
     schedule.every(5).minutes.do(analyze_data)
+    schedule.every(10).minutes.do(analyze_variation)
     print("Servicio de control iniciado")
     while 1:
         schedule.run_pending()
